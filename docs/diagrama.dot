@@ -1,0 +1,95 @@
+// PFO 3 - Diagrama del sistema distribuido
+// Generar con:  dot -Tpng -Gdpi=150 diagrama.dot -o diagrama.png
+digraph sistema {
+    rankdir=TB;
+    compound=true;
+    newrank=true;
+    nodesep=0.55;
+    ranksep=0.8;
+    fontname="Helvetica";
+    labelloc="t";
+    fontsize=18;
+    label="PFO 3: Sistema distribuido de gestión de tareas (Cliente-Servidor)\n ";
+
+    // Estilo por defecto: componentes de DISEÑO (borde punteado, gris)
+    node [fontname="Helvetica", fontsize=11, shape=box, style="rounded,filled,dashed",
+          color="#8a8a8a", fillcolor="#f0f0f0", penwidth=1.3, margin="0.18,0.10"];
+    edge [fontname="Helvetica", fontsize=9, color="#6b6b6b", fontcolor="#444444", penwidth=1.2];
+
+    // ---------------- Capa 1: Clientes ----------------
+    subgraph cluster_clientes {
+        label="Clientes"; fontsize=13; style="rounded"; color="#b0b0b0"; fontcolor="#333333";
+        movil   [label="Cliente móvil\n(app Android / iOS)"];
+        web     [label="Cliente web\n(navegador)"];
+        consola [label="Cliente de consola\ncliente.py", style="rounded,filled", color="#2e7d32", fillcolor="#d6f0dc", penwidth=2.2];
+    }
+
+    // ---------------- Capa 2: Balanceador ----------------
+    lb [label="Balanceador de carga\nNginx / HAProxy (modo TCP)", fillcolor="#fff3d6", color="#b58a00"];
+
+    // ---------------- Capa 3: Servidores de tareas ----------------
+    subgraph cluster_servidores {
+        label="Servidores de tareas (entrada del sistema)"; fontsize=13; style="rounded"; color="#b0b0b0"; fontcolor="#333333";
+        srv2 [label="Servidor de tareas 2\n(réplica para escalar)"];
+        srv1 [label="Servidor de tareas 1  ·  servidor.py (puerto 6000)\nlogin · un hilo por cliente · reparto round-robin",
+              style="rounded,filled", color="#2e7d32", fillcolor="#d6f0dc", penwidth=2.2];
+    }
+    sqlite [label="SQLite  tareas.db\n(en el código reemplaza a PostgreSQL:\nusuarios e historial de tareas)", shape=cylinder,
+            style="filled", color="#2e7d32", fillcolor="#d6f0dc", penwidth=2.2];
+
+    // ---------------- Capa 4: Cola de mensajes ----------------
+    mq [label="Cola de mensajes  ·  RabbitMQ\n(comunicación entre servidores)", shape=cds, fillcolor="#ffe3cc", color="#c0622b"];
+
+    // ---------------- Capa 5: Workers ----------------
+    subgraph cluster_workers {
+        label="Servidores workers (cada uno con su pool de hilos)"; fontsize=13; style="rounded"; color="#2e7d32"; fontcolor="#1b5e20"; penwidth=1.6;
+        w1 [label="worker.py  (puerto 6003)\nPool de 4 hilos", style="rounded,filled", color="#2e7d32", fillcolor="#d6f0dc", penwidth=2.2];
+        w2 [label="worker.py  (puerto 6001)\nPool de 4 hilos", style="rounded,filled", color="#2e7d32", fillcolor="#d6f0dc", penwidth=2.2];
+        w3 [label="worker.py  (puerto 6002)\nPool de 4 hilos", style="rounded,filled", color="#2e7d32", fillcolor="#d6f0dc", penwidth=2.2];
+    }
+
+    // ---------------- Capa 6: Almacenamiento ----------------
+    subgraph cluster_storage {
+        label="Almacenamiento distribuido"; fontsize=13; style="rounded"; color="#b0b0b0"; fontcolor="#333333";
+        pg [label="PostgreSQL\nusuarios + historial de tareas", shape=cylinder, fillcolor="#dbe8ff", color="#3b63b5"];
+        s3 [label="Amazon S3\narchivos y resultados grandes", shape=folder, fillcolor="#dbe8ff", color="#3b63b5"];
+    }
+
+    // ---------------- Orden por filas ----------------
+    {rank=same; movil; web; consola;}
+    {rank=same; srv2; srv1; sqlite;}
+    {rank=same; w1; w2; w3; w1 -> w2 -> w3 [style=invis, weight=100];}
+    {rank=same; pg; s3;}
+    srv2 -> srv1 [style=invis];
+    pg -> s3 [style=invis];
+
+    // ---------------- Conexiones del diseño (punteadas) ----------------
+    movil -> lb [label="HTTPS / TCP"];
+    web   -> lb [label="HTTPS / WebSocket"];
+    consola -> lb [style=dashed, label="en producción"];
+    lb -> srv1 [label="reparte conexiones"];
+    lb -> srv2;
+    srv1 -> mq [label="AMQP: publica tareas", style=dashed];
+    srv2 -> mq [style=dashed];
+    mq -> w2 [lhead=cluster_workers, label="AMQP: consumen tareas", style=dashed];
+    w2 -> pg [ltail=cluster_workers, lhead=cluster_storage, label="SQL", style=dashed];
+    w2 -> s3 [ltail=cluster_workers, lhead=cluster_storage, label="API S3 / HTTPS", style=dashed];
+
+    // ---------------- Conexiones implementadas (verdes, continuas) ----------------
+    edge [color="#2e7d32", fontcolor="#1b5e20", penwidth=2.4, style=solid];
+    consola -> srv1 [label="TCP :6000\nJSON por línea", constraint=false];
+    srv1 -> sqlite [label="usuarios e\nhistorial"];
+    srv1 -> w1 [label="sockets TCP\nround-robin + failover", lhead=cluster_workers];
+
+    // ---------------- Leyenda ----------------
+    legend [shape=plain, style="", label=<
+        <table border="1" cellborder="0" cellspacing="0" cellpadding="6" color="#b0b0b0">
+          <tr><td colspan="2"><b>Referencias</b></td></tr>
+          <tr><td bgcolor="#d6f0dc"><font color="#1b5e20">&#9632;</font></td>
+              <td align="left">Implementado en este TP (código Python, flechas verdes)</td></tr>
+          <tr><td bgcolor="#f0f0f0">&#9633;</td>
+              <td align="left">Parte del diseño, no implementado (borde punteado)</td></tr>
+          <tr><td colspan="2" align="left"><font point-size="9">En el código, RabbitMQ se reemplaza por sockets TCP directos entre el servidor y los workers,<br align="left"/>y PostgreSQL por SQLite. El cliente se conecta directo al servidor, sin balanceador.<br align="left"/></font></td></tr>
+        </table>>];
+    s3 -> legend [style=invis];
+}
